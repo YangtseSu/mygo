@@ -82,6 +82,9 @@ type window struct {
 	closed       bool
 	programmatic bool
 	keepAbove    bool
+	// hidePending tells that Hide was called in a frame, and that the
+	// window unmaps after GTK finished painting it (cbHideLater).
+	hidePending bool
 	// tlsRetry is the page to load again once WebKit finished its load
 	// that failed with a certificate the app allowed (auth.go).
 	tlsRetry string
@@ -667,6 +670,7 @@ func (w *window) SetAlwaysOnTop(v bool) {
 func (w *window) IsAlwaysOnTop() bool { return w.keepAbove || w.state&stateAbove != 0 }
 
 func (w *window) Show() {
+	w.hidePending = false
 	if w.opts.Flyout != nil {
 		w.showFlyout(w.flyout.Focusable)
 		return
@@ -680,6 +684,7 @@ func (w *window) Show() {
 }
 
 func (w *window) ShowInactive() {
+	w.hidePending = false
 	if w.opts.Flyout != nil {
 		w.showFlyout(false)
 		return
@@ -712,6 +717,21 @@ func (w *window) willShow() {
 }
 
 func (w *window) Hide() {
+	if w.closed {
+		return
+	}
+	if s := w.surface; s != nil && s.drawing() {
+		// GTK paints the area after the frame returns, and unmapping the
+		// window now would release the Wayland GL context GTK's paint
+		// uses: unmap it after, before the next events (G_PRIORITY_HIGH),
+		// as Close destroys it.
+		if !w.hidePending {
+			w.hidePending = true
+			gIdleAddFull(-100, cbHideLater, ptr(w.id), 0)
+		}
+		return
+	}
+	w.hidePending = false
 	if w.opts.Flyout != nil {
 		w.hideFlyout()
 		return
@@ -733,6 +753,7 @@ func (w *window) Focus() {
 		w.showFlyout(w.flyout.Focusable)
 		return
 	}
+	w.hidePending = false
 	w.b.dismissFlyouts(w)
 	if w.layer {
 		w.layerKeyboard(true)
@@ -1537,7 +1558,7 @@ var (
 	cbCreate, cbClose, cbCrashed, cbButtonPress, cbAsyncReady, cbPNGWrite       ptr
 	cbDragData, cbDragDrop, cbPrintFinished, cbPrintFailed, cbPermission        ptr
 	cbMotion, cbControlsAllocated, cbDecorationLayout, cbActivationResize       ptr
-	cbCloseLater, cbPlayingAudio, cbCaptureState                                ptr
+	cbCloseLater, cbHideLater, cbPlayingAudio, cbCaptureState                   ptr
 )
 
 func field[T any](p ptr, offset uintptr) T {
@@ -1561,6 +1582,13 @@ func initWindowCallbacks() {
 	cbCloseLater = purego.NewCallback(func(data ptr) int32 {
 		if w := b().window(data); w != nil {
 			w.Close()
+		}
+		return 0 // G_SOURCE_REMOVE
+	})
+	cbHideLater = purego.NewCallback(func(data ptr) int32 {
+		if w := b().window(data); w != nil && w.hidePending {
+			w.hidePending = false
+			w.Hide()
 		}
 		return 0 // G_SOURCE_REMOVE
 	})

@@ -1603,6 +1603,26 @@ func TestCloseInFrame(t *testing.T) {
 	}
 }
 
+// TestHideInFrame hides a window from its own content as it builds a
+// frame, as a close button that hides does: GTK paints the window's
+// GtkGLArea after the frame returns, so the window unmaps after GTK
+// finished, and shows again when asked.
+func TestHideInFrame(t *testing.T) {
+	var self atomic.Pointer[mygo.Window]
+	var frames atomic.Int32
+	w := newWindow(t, mygo.WindowOptions{Title: "Hide in frame", Width: 320, Height: 240, Content: ui.View(func(c *ui.Context) {
+		if frames.Add(1) == 2 {
+			self.Load().Hide()
+		}
+		c.AnimationFrame()
+		ui.Box(c).Fill().Background(ui.RGB(255, 255, 255))
+	})})
+	self.Store(w)
+	eventually(t, "the window hidden", func() bool { return !w.IsVisible() })
+	w.Show()
+	eventually(t, "the window shown again", w.IsVisible)
+}
+
 // TestFileDrop drops files with synthetic DOM events, the platform side
 // being played by a test hook, and checks that the page's own drag and
 // drop is undisturbed.
